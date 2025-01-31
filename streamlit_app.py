@@ -14,15 +14,44 @@ HEADERS = {
 BASE_URL = "https://api.github.com"
 
 
-def get_repos():
-    """Fetch all repositories the user has access to (including org repos)."""
+def get_user_repos():
+    """Fetch all repositories the authenticated user has access to (including private ones)."""
     url = f"{BASE_URL}/user/repos?per_page=100&type=all"
     response = requests.get(url, headers=HEADERS)
     if response.status_code == 200:
         return {repo["full_name"]: repo["html_url"] for repo in response.json()}
     else:
-        st.error(f"Failed to fetch repositories: {response.text}")
+        st.error(f"Failed to fetch user repositories: {response.text}")
         return {}
+
+
+def get_org_repos():
+    """Fetch all repositories from organizations the user is part of."""
+    url = f"{BASE_URL}/user/orgs"
+    org_response = requests.get(url, headers=HEADERS)
+    
+    org_repos = {}
+
+    if org_response.status_code == 200:
+        orgs = org_response.json()
+        for org in orgs:
+            org_name = org["login"]
+            repo_url = f"{BASE_URL}/orgs/{org_name}/repos?per_page=100&type=all"
+            repo_response = requests.get(repo_url, headers=HEADERS)
+            if repo_response.status_code == 200:
+                for repo in repo_response.json():
+                    org_repos[repo["full_name"]] = repo["html_url"]
+            else:
+                st.warning(f"Failed to fetch repositories for {org_name}: {repo_response.text}")
+    
+    return org_repos
+
+
+def get_all_repos():
+    """Combine user and organization repositories."""
+    user_repos = get_user_repos()
+    org_repos = get_org_repos()
+    return {**user_repos, **org_repos}
 
 
 def get_tags(repo_full_name):
@@ -86,9 +115,9 @@ def generate_ai_summary(text):
     """
 
     response = openai.ChatCompletion.create(
-        model="gpt-4o",
+        model="gpt-4",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=1000
+        max_tokens=300
     )
 
     return response["choices"][0]["message"]["content"]
@@ -98,7 +127,7 @@ def generate_ai_summary(text):
 st.title("🔍 GitHub Repo Tag Comparison Tool")
 
 # Fetch all repositories the user has access to
-repos = get_repos()
+repos = get_all_repos()
 repo_names = list(repos.keys())
 
 if repo_names:
@@ -122,4 +151,4 @@ if repo_names:
                     st.subheader("📋 Summary of Changes:")
                     st.write(summary)
 else:
-    st.warning("No repositories found. Ensure your GitHub API token has `repo` permissions.")
+    st.warning("No repositories found. Ensure your GitHub API token has `repo` and `read:org` permissions.")
