@@ -105,7 +105,7 @@ def fetch_commit_details(repo_full_name, commit):
         return commit["commit"]["message"], []
 
 
-def generate_commit_summary(repo_full_name, commits):
+def generate_commit_summary(repo_full_name, commits, custom_prompt):
     """Generate a detailed summary of commit changes using threading."""
     if not commits:
         return "No commit data available."
@@ -133,17 +133,14 @@ def generate_commit_summary(repo_full_name, commits):
     {chr(10).join(commit_messages)}
     """
 
-    return generate_ai_summary(change_summary)
+    return generate_ai_summary(custom_prompt, change_summary)
 
 
-def generate_ai_summary(text):
+def generate_ai_summary(custom_prompt, text):
     """Use OpenAI API to summarize the commit changes."""
     client = OpenAI(api_key=OPENAI_API_KEY)
-    prompt = f"""
-    You are an expert software engineer. Summarize the following commit history with insights about the code changes:
-
-    {text}
-    """
+    prompt = f"{custom_prompt}\n\n{text}"
+    
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
@@ -171,6 +168,10 @@ if repo_names:
         
         commit_limit = st.number_input("Limit commits (0 = all)", min_value=0, value=10, step=1)
 
+        # Editable AI Prompt
+        default_prompt = """You are an expert software engineer. Summarize the following commit history with insights about the code changes."""
+        custom_prompt = st.text_area("Edit AI Prompt:", default_prompt, height=150)
+
         if st.button("Compare Tags"):
             if tag1 == tag2:
                 st.warning("Please select two different tags for comparison.")
@@ -178,7 +179,7 @@ if repo_names:
                 st.info(f"Comparing `{tag1}` to `{tag2}` in `{selected_repo}`...")
                 commits = get_commits_between_tags(selected_repo, tag1, tag2, commit_limit)
                 if commits:
-                    summary = generate_commit_summary(selected_repo, commits)
+                    summary = generate_commit_summary(selected_repo, commits, custom_prompt)
                     st.subheader("📋 Summary of Changes:")
                     st.write(summary)
                 else:
