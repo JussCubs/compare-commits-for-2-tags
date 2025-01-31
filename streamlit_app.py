@@ -107,20 +107,19 @@ def generate_commit_summary(repo_full_name, commit_data):
 
 def generate_ai_summary(text):
     """Use OpenAI API to summarize the commit changes."""
-    openai.api_key = OPENAI_API_KEY
+    from openai import OpenAI
+    client = OpenAI(api_key=OPENAI_API_KEY)
     prompt = f"""
     You are an expert software engineer. Summarize the following commit history with insights about the code changes:
 
     {text}
     """
-
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
+    response = client.chat.completions.create(
+        model="gpt-4o",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=300
+        max_tokens=1000
     )
-
-    return response["choices"][0]["message"]["content"]
+    return response.choices[0].message.content
 
 
 # Streamlit UI
