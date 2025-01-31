@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-import openai
+from openai import OpenAI
 
 # Load secrets from Streamlit
 GITHUB_API_KEY = st.secrets["GITHUB_API_KEY"]
@@ -29,7 +29,7 @@ def get_org_repos():
     """Fetch all repositories from organizations the user is part of."""
     url = f"{BASE_URL}/user/orgs"
     org_response = requests.get(url, headers=HEADERS)
-    
+
     org_repos = {}
 
     if org_response.status_code == 200:
@@ -43,7 +43,7 @@ def get_org_repos():
                     org_repos[repo["full_name"]] = repo["html_url"]
             else:
                 st.warning(f"Failed to fetch repositories for {org_name}: {repo_response.text}")
-    
+
     return org_repos
 
 
@@ -65,49 +65,63 @@ def get_tags(repo_full_name):
         return []
 
 
-def get_commits_between_tags(repo_full_name, tag1, tag2):
-    """Get all commits between two tags."""
+def get_commits_between_tags(repo_full_name, tag1, tag2, commit_limit=10):
+    """Get all commits between two tags and limit the number of commits analyzed."""
     url = f"{BASE_URL}/repos/{repo_full_name}/compare/{tag1}...{tag2}"
     response = requests.get(url, headers=HEADERS)
+    
     if response.status_code == 200:
-        return response.json()
+        data = response.json()
+        commits = data.get("commits", [])
+        
+        if not commits:
+            st.warning(f"No commits found between `{tag1}` and `{tag2}`.")
+            return None
+
+        # Limit commits if commit_limit is set, otherwise process all
+        return commits[:commit_limit] if commit_limit else commits
     else:
         st.error(f"Failed to fetch commits: {response.text}")
         return None
 
 
-def generate_commit_summary(repo_full_name, commit_data):
-    """Generate a detailed summary of changes between the selected tags."""
-    commit_messages = [commit["commit"]["message"] for commit in commit_data["commits"]]
-    files_changed = []
+def generate_commit_summary(repo_full_name, commits):
+    """Generate a detailed summary of commit changes."""
+    if not commits:
+        return "No commit data available."
 
-    for commit in commit_data["commits"]:
+    commit_messages = []
+    files_changed = set()
+
+    for commit in commits:
         sha = commit["sha"]
+        commit_message = commit["commit"]["message"]
+        commit_messages.append(commit_message)
+
+        # Fetch detailed commit changes
         url = f"{BASE_URL}/repos/{repo_full_name}/commits/{sha}"
         response = requests.get(url, headers=HEADERS)
         if response.status_code == 200:
             commit_details = response.json()
             for file in commit_details.get("files", []):
-                files_changed.append(f"{file['filename']} ({file['status']})")
+                files_changed.add(f"{file['filename']} ({file['status']})")
 
     change_summary = f"""
-    📌 **Number of commits:** {len(commit_messages)}
-    📂 **Files changed:** {len(set(files_changed))}
+    📌 **Number of commits analyzed:** {len(commits)}
+    📂 **Files changed:** {len(files_changed)}
     
     🔹 **List of changed files:**
-    {chr(10).join(set(files_changed))}
+    {chr(10).join(files_changed)}
 
     📝 **Commit Messages:**
     {chr(10).join(commit_messages)}
     """
 
-    # Generate an AI summary
     return generate_ai_summary(change_summary)
 
 
 def generate_ai_summary(text):
     """Use OpenAI API to summarize the commit changes."""
-    from openai import OpenAI
     client = OpenAI(api_key=OPENAI_API_KEY)
     prompt = f"""
     You are an expert software engineer. Summarize the following commit history with insights about the code changes:
@@ -115,7 +129,7 @@ def generate_ai_summary(text):
     {text}
     """
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=1000
     )
@@ -138,15 +152,17 @@ if repo_names:
     if tags:
         tag1 = st.selectbox("Select First Tag", tags, index=0)
         tag2 = st.selectbox("Select Second Tag", tags, index=1)
+        
+        commit_limit = st.number_input("Limit commits (0 = all)", min_value=0, value=10, step=1)
 
         if st.button("Compare Tags"):
             if tag1 == tag2:
                 st.warning("Please select two different tags for comparison.")
             else:
                 st.info(f"Comparing `{tag1}` to `{tag2}` in `{selected_repo}`...")
-                commit_data = get_commits_between_tags(selected_repo, tag1, tag2)
-                if commit_data:
-                    summary = generate_commit_summary(selected_repo, commit_data)
+                commits = get_commits_between_tags(selected_repo, tag1, tag2, commit_limit)
+                if commits:
+                    summary = generate_commit_summary(selected_repo, commits)
                     st.subheader("📋 Summary of Changes:")
                     st.write(summary)
 else:
