@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 from openai import OpenAI
+import concurrent.futures
 
 # Load secrets from Streamlit
 GITHUB_API_KEY = st.secrets["GITHUB_API_KEY"]
@@ -66,45 +67,60 @@ def get_tags(repo_full_name):
 
 
 def get_commits_between_tags(repo_full_name, tag1, tag2, commit_limit=10):
-    """Get all commits between two tags and limit the number of commits analyzed."""
-    url = f"{BASE_URL}/repos/{repo_full_name}/compare/{tag1}...{tag2}"
-    response = requests.get(url, headers=HEADERS)
-    
-    if response.status_code == 200:
-        data = response.json()
-        commits = data.get("commits", [])
-        
-        if not commits:
-            st.warning(f"No commits found between `{tag1}` and `{tag2}`.")
-            return None
+    """Get all commits between two tags with a fallback approach."""
+    compare_url = f"{BASE_URL}/repos/{repo_full_name}/compare/{tag1}...{tag2}"
+    compare_response = requests.get(compare_url, headers=HEADERS)
 
-        # Limit commits if commit_limit is set, otherwise process all
+    if compare_response.status_code == 200:
+        data = compare_response.json()
+        commits = data.get("commits", [])
+
+        if commits:
+            return commits[:commit_limit] if commit_limit else commits
+
+    # If /compare/ fails or returns no commits, fetch manually from tag1 onward
+    fallback_url = f"{BASE_URL}/repos/{repo_full_name}/commits?sha={tag1}&per_page=100"
+    fallback_response = requests.get(fallback_url, headers=HEADERS)
+
+    if fallback_response.status_code == 200:
+        commits = fallback_response.json()
         return commits[:commit_limit] if commit_limit else commits
     else:
-        st.error(f"Failed to fetch commits: {response.text}")
+        st.error(f"Failed to fetch commits manually: {fallback_response.text}")
         return None
 
 
+def fetch_commit_details(repo_full_name, commit):
+    """Fetch detailed commit changes using threading."""
+    sha = commit["sha"]
+    url = f"{BASE_URL}/repos/{repo_full_name}/commits/{sha}"
+    response = requests.get(url, headers=HEADERS)
+
+    if response.status_code == 200:
+        commit_details = response.json()
+        commit_message = commit_details["commit"]["message"]
+        changed_files = [f"{file['filename']} ({file['status']})" for file in commit_details.get("files", [])]
+        return commit_message, changed_files
+    else:
+        return commit["commit"]["message"], []
+
+
 def generate_commit_summary(repo_full_name, commits):
-    """Generate a detailed summary of commit changes."""
+    """Generate a detailed summary of commit changes using threading."""
     if not commits:
         return "No commit data available."
 
     commit_messages = []
     files_changed = set()
 
-    for commit in commits:
-        sha = commit["sha"]
-        commit_message = commit["commit"]["message"]
-        commit_messages.append(commit_message)
+    # Use threading for faster commit fetching
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [executor.submit(fetch_commit_details, repo_full_name, commit) for commit in commits]
 
-        # Fetch detailed commit changes
-        url = f"{BASE_URL}/repos/{repo_full_name}/commits/{sha}"
-        response = requests.get(url, headers=HEADERS)
-        if response.status_code == 200:
-            commit_details = response.json()
-            for file in commit_details.get("files", []):
-                files_changed.add(f"{file['filename']} ({file['status']})")
+        for future in concurrent.futures.as_completed(futures):
+            commit_message, changed_files = future.result()
+            commit_messages.append(commit_message)
+            files_changed.update(changed_files)
 
     change_summary = f"""
     📌 **Number of commits analyzed:** {len(commits)}
@@ -137,7 +153,7 @@ def generate_ai_summary(text):
 
 
 # Streamlit UI
-st.title("🔍 GitHub Repo Tag Comparison Tool")
+st.title("🔍 GitHub Repo Tag Comparison Tool (Multi-Threaded)")
 
 # Fetch all repositories the user has access to
 repos = get_all_repos()
@@ -165,5 +181,7 @@ if repo_names:
                     summary = generate_commit_summary(selected_repo, commits)
                     st.subheader("📋 Summary of Changes:")
                     st.write(summary)
+                else:
+                    st.warning("No commits found, even after fallback attempt.")
 else:
     st.warning("No repositories found. Ensure your GitHub API token has `repo` and `read:org` permissions.")
